@@ -1,0 +1,15 @@
+# Ficheiros de ambiente e cache do Python
+__pycache__/
+venv/
+*.pyc
+
+# Pasta com modelos treinados
+auxiliary/
+
+# Pasta com imagens de teste
+test/
+data/
+train/
+
+# Ficheiros do sistema
+.DS_Store

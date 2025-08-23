@@ -1,0 +1,22 @@
+name: cl_modern
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+
+  # Core de Deep Learning
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+
+  # Libs used
+  - numpy
+  - scikit-image
+  - pillow
+  - matplotlib
+  - tqdm
+  - opencv
