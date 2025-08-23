@@ -27,23 +27,18 @@ def resize_clicks(clicks, orig_h, orig_w, new_h, new_w):
     }
 
 def finetune_on_clicks(model, optimizer, image_tensor, user_clicks, object_class_id, device, iterations=10):
-    # CORREÇÃO: Mover a lógica de BatchNorm aqui dentro para ser executada após model.train().
     model.train()
-    
-    # Define uma função para encontrar e colocar as camadas de BatchNorm em modo de avaliação
+
     def set_bn_eval(m):
         classname = m.__class__.__name__
         if classname.find('BatchNorm') != -1:
             m.eval()
     
-    # Aplica a função a todas as sub-camadas do modelo
     model.apply(set_bn_eval)
-
-    # Congela parâmetros do backbone
+    
     for p in model.backbone.parameters():
         p.requires_grad = False
     
-    # Treina apenas o classificador
     for p in model.classifier.parameters():
         p.requires_grad = True
 
@@ -87,30 +82,54 @@ def evaluate_all_classes(pred_mask, gt_mask, num_classes=21):
             results[class_id] = iou
     return results
 
+def find_simulated_clicks(initial_mask, gt_mask, object_class_id, num_clicks=15):
+    """
+    Encontra cliques positivos e negativos comparando a máscara inicial com a ground truth.
+    Retorna uma lista de cliques para simulação.
+    """
+    false_negatives = np.where(
+        (gt_mask == object_class_id) & (initial_mask != object_class_id)
+    )
+
+    false_positives = np.where(
+        (initial_mask == object_class_id) & (gt_mask != object_class_id) & (gt_mask != 255)
+    )
+    
+    pos_clicks = []
+    if len(false_negatives[0]) > 0:
+        indices = np.random.choice(len(false_negatives[0]), min(len(false_negatives[0]), num_clicks), replace=False)
+        for i in indices:
+            pos_clicks.append((false_negatives[0][i], false_negatives[1][i]))
+
+    neg_clicks = []
+    if len(false_positives[0]) > 0:
+        indices = np.random.choice(len(false_positives[0]), min(len(false_positives[0]), num_clicks), replace=False)
+        for i in indices:
+            neg_clicks.append((false_positives[0][i], false_positives[1][i]))
+
+    return {'pos': pos_clicks, 'neg': neg_clicks}
+
+
 # ----------------------------
 # Função principal
 # ----------------------------
-def run_single_experiment(image_path, gt_mask_path, object_class_id, simulated_clicks):
+def run_single_experiment(image_path, gt_mask_path, object_class_id):
     print(f"--- A EXECUTAR EXPERIMENTO PARA: {image_path} ---")
 
     IMG_HEIGHT, IMG_WIDTH, NUM_CLASSES = 256, 352, 21
     MODEL_PATH = 'auxiliary/m2_deeplab.pth'
 
-    #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cpu')
     
-    # DeepLabV3-ResNet50
     model = torchvision.models.segmentation.deeplabv3_resnet50(
         weights=None,
         num_classes=NUM_CLASSES
     ).to(device)
     
     state_dict = torch.load(MODEL_PATH, map_location=device)
-    # Ignora chaves extras do aux_classifier
     filtered_state_dict = {k: v for k, v in state_dict.items() if k in model.state_dict()}
     model.load_state_dict(filtered_state_dict)
 
-    # imagem + máscara GT
     image_pil = Image.open(image_path).convert('RGB')
     orig_w, orig_h = image_pil.size
     image_tensor = utilIO.prepare_image_for_model(image_pil, IMG_HEIGHT, IMG_WIDTH)
@@ -125,19 +144,26 @@ def run_single_experiment(image_path, gt_mask_path, object_class_id, simulated_c
     print("Predição inicial:", np.unique(initial_mask))
     print(f"IoU Inicial para a classe {object_class_id}: {initial_iou:.4f}")
 
-    clicks_resized = resize_clicks(simulated_clicks, orig_h, orig_w, IMG_HEIGHT, IMG_WIDTH)
-
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5, weight_decay=1e-4)
+    simulated_clicks = find_simulated_clicks(initial_mask, gt_mask, object_class_id, num_clicks=5)
     
-    finetune_on_clicks(model, optimizer, image_tensor, clicks_resized, object_class_id, device)
+    if not simulated_clicks['pos'] and not simulated_clicks['neg']:
+        print("\nSem erros de segmentação encontrados. Nenhum refinamento necessário.")
+        final_iou = initial_iou
+        final_mask = initial_mask
+    else:
+        clicks_resized = resize_clicks(simulated_clicks, orig_h, orig_w, IMG_HEIGHT, IMG_WIDTH)
+        
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5, weight_decay=1e-5)
+        
+        finetune_on_clicks(model, optimizer, image_tensor, clicks_resized, object_class_id, device)
 
-    final_mask = predict(model, image_tensor, device)
-    final_iou = calculate_iou(final_mask, gt_mask, object_class_id)
+        final_mask = predict(model, image_tensor, device)
+        final_iou = calculate_iou(final_mask, gt_mask, object_class_id)
 
     print("\n--- RELATÓRIO DO EXPERIMENTO ---")
     print(f"Imagem: {image_path}")
     print(f"IoU Inicial: {initial_iou:.4f}")
-    print(f"IoU Final:   {final_iou:.4f}")
+    print(f"IoU Final:   {final_iou:.4f}")
     if initial_iou is not None and initial_iou > 0:
         gain = ((final_iou - initial_iou) / initial_iou) * 100
         print(f"Ganho de Performance: {gain:+.2f}%")
@@ -168,9 +194,4 @@ if __name__ == '__main__':
     TEST_GT_MASK_PATH = 'test_data/2007_000256.png'
     OBJECT_CLASS_ID = 0
 
-    SIMULATED_CLICKS = {
-        'pos': [(150, 200), (180, 280), (120, 110)],
-        'neg': [(50, 150), (220, 100)]
-    }
-
-    run_single_experiment(TEST_IMAGE_PATH, TEST_GT_MASK_PATH, OBJECT_CLASS_ID, SIMULATED_CLICKS)
+    run_single_experiment(TEST_IMAGE_PATH, TEST_GT_MASK_PATH, OBJECT_CLASS_ID)
