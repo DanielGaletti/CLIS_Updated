@@ -10,6 +10,7 @@ auxiliary/
 test/
 data/
 train/
+test_data/
 
 # Ficheiros do sistema
 .DS_Store

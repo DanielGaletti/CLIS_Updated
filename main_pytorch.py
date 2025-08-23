@@ -1,4 +1,4 @@
-# main_pytorch.py
+# main_pytorch.py (v3 - Aprendizagem Agressiva)
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,15 +6,11 @@ import torch.nn.functional as F
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
-from skimage.segmentation import slic
 from skimage.segmentation import mark_boundaries
-
-# Importar os seus utilitários originais que ainda vamos usar
 import utilIO
-import utilUser
-import utilInteract
 
-# --- 1. DEFINIÇÃO DA ARQUITETURA DO MODELO (A MESMA DO PRÉ-TREINO) ---
+# --- ARQUITETURA DO MODELO (Sem alterações) ---
+# ... (todo o código da U-Net fica aqui, exatamente como antes) ...
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -57,33 +53,28 @@ class UNet(nn.Module):
         x = self.up1(x5, x4); x = self.up2(x, x3); x = self.up3(x, x2); x = self.up4(x, x1); return self.outc(x)
 
 
-# --- 2. FUNÇÕES DE MODELO (PREDIÇÃO E FINE-TUNING) ---
-
+# --- FUNÇÕES DE MODELO (Com iterações aumentadas) ---
 def predict(model, image_tensor, device):
-    """Faz uma previsão e retorna a máscara de segmentação."""
     model.eval()
     with torch.no_grad():
         output = model(image_tensor.unsqueeze(0).to(device))
-        # A saída é (1, C, H, W). Pegamos a classe com maior probabilidade.
         mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
     return mask
 
-def finetune_on_clicks(model, optimizer, image_tensor, user_clicks, device, iterations=10):
-    """Refina o modelo com base nos cliques do utilizador."""
+def finetune_on_clicks(model, optimizer, image_tensor, user_clicks, device, iterations=20): # AUMENTADO para 20
+    if not user_clicks['pos'] and not user_clicks['neg']:
+        print("Nenhum clique para refinar. A saltar o fine-tuning.")
+        return
+        
     model.train()
-    
-    # Criar uma máscara de treino a partir dos cliques
-    # 0 = fundo, 1 = objeto, -1 = ignorar
     click_mask = torch.full((image_tensor.shape[1], image_tensor.shape[2]), -1, dtype=torch.long)
-    for click in user_clicks['pos']:
-        click_mask[click[0], click[1]] = 1
-    for click in user_clicks['neg']:
-        click_mask[click[0], click[1]] = 0
+    
+    for p in user_clicks['pos']: click_mask[p[0], p[1]] = 1
+    for p in user_clicks['neg']: click_mask[p[0], p[1]] = 0
         
     click_mask = click_mask.to(device)
     image_tensor = image_tensor.to(device)
-    
-    criterion = nn.CrossEntropyLoss(ignore_index=-1) # Ignora os píxeis onde não clicámos
+    criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
     print(f"A refinar o modelo com {len(user_clicks['pos'])} cliques positivos e {len(user_clicks['neg'])} negativos...")
     for i in range(iterations):
@@ -94,15 +85,13 @@ def finetune_on_clicks(model, optimizer, image_tensor, user_clicks, device, iter
         optimizer.step()
     print("Refinamento concluído.")
 
-# --- 3. LÓGICA PRINCIPAL DA APLICAÇÃO ---
-
+# --- LÓGICA PRINCIPAL DA APLICAÇÃO (Com taxa de aprendizagem aumentada) ---
 def run_interactive_session():
     # Configurações
     IMG_HEIGHT, IMG_WIDTH, NUM_CLASSES = 256, 352, 21
     MODEL_PATH = 'auxiliary/m2.pth'
-    IMAGE_PATH = 'test/000001.jpg' 
+    IMAGE_PATH = 'img/2007_000033.jpg'
     
-    # Detetar dispositivo e carregar modelo
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"A usar o dispositivo: {device}")
     
@@ -110,37 +99,39 @@ def run_interactive_session():
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     print("Modelo m2.pth carregado com sucesso.")
 
-    # Otimizador para o fine-tuning
-    optimizer = optim.Adam(model.parameters(), lr=1e-5) # Taxa de aprendizagem baixa para refinamento
+    # --- A CORREÇÃO PRINCIPAL ESTÁ AQUI ---
+    optimizer = optim.Adam(model.parameters(), lr=1e-4) # AUMENTADO DE 1e-5 PARA 1e-4 (10x maior)
 
-    # Carregar e preparar a imagem
     image_pil = Image.open(IMAGE_PATH).convert('RGB')
     image_tensor = utilIO.prepare_image_for_model(image_pil, IMG_HEIGHT, IMG_WIDTH)
-
-    # Dicionário para guardar os cliques do utilizador
+    display_image = image_pil.resize((IMG_WIDTH, IMG_HEIGHT))
     user_clicks = {'pos': [], 'neg': []}
 
-    # Loop interativo
     while True:
-        # Fazer a previsão inicial (ou atualizada)
         segmentation_mask = predict(model, image_tensor, device)
         
-        # Mostrar a imagem e a máscara, e obter os cliques do utilizador
-        plt.imshow(mark_boundaries(np.array(image_pil.resize((IMG_WIDTH, IMG_HEIGHT))), segmentation_mask))
-        plt.title("Segmentação atual. Clique para adicionar pontos (esq=objeto, dir=fundo). Feche para refinar.")
+        fig, ax = plt.subplots(); ax.imshow(mark_boundaries(np.array(display_image), segmentation_mask))
+        ax.set_title("Clique (esq=objeto, dir=fundo) e feche a janela para refinar.")
+        
+        temp_clicks = {'pos': [], 'neg': []}
+        def onclick(event):
+            if event.xdata is None or event.ydata is None: return
+            ix, iy = int(round(event.xdata)), int(round(event.ydata))
+            if event.button == 1:
+                temp_clicks['pos'].append((iy, ix)); ax.plot(ix, iy, 'go', markersize=8)
+            elif event.button == 3:
+                temp_clicks['neg'].append((iy, ix)); ax.plot(ix, iy, 'ro', markersize=8)
+            fig.canvas.draw()
+
+        fig.canvas.mpl_connect('button_press_event', onclick)
         plt.show(block=True)
         
-        new_clicks = utilUser.get_user_clicks(image_pil, segmentation_mask)
+        if not temp_clicks['pos'] and not temp_clicks['neg']:
+            print("Nenhum clique novo. A terminar a sessão."); break
         
-        if not new_clicks['pos'] and not new_clicks['neg']:
-            print("Nenhum clique novo. A terminar a sessão.")
-            break
+        user_clicks['pos'].extend(temp_clicks['pos'])
+        user_clicks['neg'].extend(temp_clicks['neg'])
         
-        # Adicionar novos cliques aos cliques existentes
-        user_clicks['pos'].extend(new_clicks['pos'])
-        user_clicks['neg'].extend(new_clicks['neg'])
-        
-        # Refinar o modelo com todos os cliques recolhidos até agora
         finetune_on_clicks(model, optimizer, image_tensor, user_clicks, device)
 
 if __name__ == '__main__':
