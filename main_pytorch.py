@@ -85,7 +85,7 @@ def run_interactive_session():
     IMG_HEIGHT, IMG_WIDTH, NUM_CLASSES = 256, 352, 21
 
     MODEL_PATH = None 
-    IMAGE_PATH = 'test/000001.jpg'
+    IMAGE_PATH = 'test/001149.jpg'
     OBJECT_CLASS_ID = 1 
     
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
