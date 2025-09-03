@@ -58,6 +58,13 @@ class VOCDataset(Dataset):
 
         return image_tensor, mask_tensor
 
+# Função para filtrar amostras que retornaram None (devido a erros de ficheiro)
+def collate_fn(batch):
+    batch = list(filter(lambda x: x is not None, batch))
+    if not batch:
+        return torch.tensor([]), torch.tensor([])
+    return torch.utils.data.dataloader.default_collate(batch)
+
 # ---------------- MODELO ----------------
 def get_deeplabv3_model(num_classes):
     model = deeplabv3_resnet50(weights='DEFAULT')
@@ -69,15 +76,19 @@ def train_model():
     print("--- Treino DeepLabV3-ResNet50 com Early Stopping ---")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Usando dispositivo: {device}")
+    print(torch.__version__)
+    print(torch.version.cuda)
+    print(torch.cuda.is_available())
+    print(torch.cuda.get_device_name(0))
+
 
     dataset = VOCDataset(data_dir=DATA_DIR, height=IMG_HEIGHT, width=IMG_WIDTH)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True, collate_fn=collate_fn, drop_last=True)
     print(f"Dados carregados: {len(dataset)} amostras.")
-
     model = get_deeplabv3_model(NUM_CLASSES).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_loss = float('inf')
     epochs_no_improve = 0
